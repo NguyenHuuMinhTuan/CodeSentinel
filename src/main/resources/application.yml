@@ -1,0 +1,20 @@
+spring:
+  datasource:
+      url: jdbc:postgresql://localhost:5432/codesentinel_db
+      username: postgres
+      password: 161024
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+
+    properties:
+      hibernate:
+        format_sql: true
+
+  output:
+    ansi:
+      enabled: always
+
+server:
+  port: 8080

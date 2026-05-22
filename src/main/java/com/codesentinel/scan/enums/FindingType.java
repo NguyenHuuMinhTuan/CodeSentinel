@@ -1,0 +1,12 @@
+package com.codesentinel.scan.enums;
+
+public enum FindingType {
+    COMMAND_EXECUTION,
+    REFLECTION_ABUSE,
+    NETWORK_ACCESS,
+    BASE64_OBFUSCATION,
+    HEX_OBFUSCATION,
+    DANGEROUS_SCRIPT,
+    MALICIOUS_DOWNLOAD,
+    SYSTEM_MODIFICATION
+}
