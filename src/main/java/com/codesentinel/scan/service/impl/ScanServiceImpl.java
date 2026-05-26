@@ -23,10 +23,6 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class ScanServiceImpl implements ScanService {
 
-    // =========================
-    // scan engine injection
-    // =========================
-
     private final ScanEngine scanEngine;
 
     @Override
@@ -37,7 +33,35 @@ public class ScanServiceImpl implements ScanService {
         try {
 
             // =========================
-            // 1. save uploaded zip
+            // validate upload
+            // =========================
+
+            if (file == null || file.isEmpty()) {
+
+                throw new RuntimeException(
+                        "Uploaded file is empty"
+                );
+            }
+
+            String originalName =
+                    file.getOriginalFilename();
+
+            if (originalName == null || originalName.isBlank()) {
+
+                throw new RuntimeException(
+                        "Invalid file name"
+                );
+            }
+
+            log.info("========== SCAN START ==========");
+            log.info("UPLOAD FILE: {}", originalName);
+            log.info("UPLOAD SIZE: {}", file.getSize());
+
+            log.info("ORIGINAL FILE: {}", originalName);
+            log.info("CONTENT TYPE: {}", file.getContentType());
+
+            // =========================
+            // prepare temp paths
             // =========================
 
             String uploadDir =
@@ -45,61 +69,103 @@ public class ScanServiceImpl implements ScanService {
                             "java.io.tmpdir"
                     );
 
-            File tempZip =
+            String safeFileName =
+                    UUID.randomUUID()
+                            + "_"
+                            + originalName;
+
+            File uploadedFile =
                     new File(
                             uploadDir,
-                            file.getOriginalFilename()
+                            safeFileName
                     );
 
-            file.transferTo(tempZip);
+            // =========================
+            // save uploaded file
+            // =========================
+
+            file.transferTo(uploadedFile);
 
             log.info(
-                    "ZIP SAVED: {}",
-                    tempZip.getAbsolutePath()
+                    "FILE SAVED: {}",
+                    uploadedFile.getAbsolutePath()
             );
-
-            // =========================
-            // 2. extract zip
-            // =========================
-
-            String extractDir =
-                    uploadDir +
-                            "/extract_" +
-                            UUID.randomUUID();
-
-            ZipUtil.extractZip(
-                    tempZip.getAbsolutePath(),
-                    extractDir
-            );
-
-            File extractFolder =
-                    new File(extractDir);
 
             log.info(
-                    "ZIP EXTRACTED: {}",
-                    extractFolder.getAbsolutePath()
+                    "SAVED FILE SIZE: {} bytes",
+                    uploadedFile.length()
             );
 
             // =========================
-            // 3. scan dangerous extensions
+            // detect zip or single file
+            // =========================
+
+            boolean isZip =
+                    originalName
+                            .toLowerCase()
+                            .endsWith(".zip");
+
+            File scanTarget;
+
+            if (isZip) {
+
+                // =========================
+                // extract zip
+                // =========================
+
+                String extractDir =
+                        uploadDir
+                                + File.separator
+                                + "extract_"
+                                + UUID.randomUUID();
+
+                ZipUtil.extractZip(
+                        uploadedFile.getAbsolutePath(),
+                        extractDir
+                );
+
+                scanTarget =
+                        new File(extractDir);
+
+                log.info(
+                        "ZIP EXTRACTED: {}",
+                        scanTarget.getAbsolutePath()
+                );
+
+            } else {
+
+                // =========================
+                // single file scan
+                // =========================
+
+                scanTarget =
+                        uploadedFile;
+
+                log.info(
+                        "SINGLE FILE MODE ENABLED"
+                );
+            }
+
+            // =========================
+            // suspicious extension scan
             // =========================
 
             List<String> suspiciousFiles =
                     FileRiskUtil.scanDangerousFiles(
-                            extractFolder
+                            scanTarget
                     );
 
             // =========================
-            // 4. scan detectors
+            // detector scan
             // =========================
 
             List<Finding> findings =
                     scanEngine.scan(
-                            extractFolder
+                            scanTarget
                     );
 
             // =========================
-            // 5. read project files
+            // build file list
             // =========================
 
             List<FileInfo> files =
@@ -108,46 +174,94 @@ public class ScanServiceImpl implements ScanService {
             Map<String, Integer> extensions =
                     new HashMap<>();
 
-            try (Stream<Path> paths =
-                         Files.walk(
-                                 Path.of(extractDir)
-                         )) {
+            if (scanTarget.isFile()) {
 
-                paths
-                        .filter(Files::isRegularFile)
-                        .forEach(path -> {
+                // =========================
+                // single file info
+                // =========================
 
-                            String fileName =
-                                    path.getFileName()
-                                            .toString();
+                String fileName =
+                        scanTarget.getName();
 
-                            String extension =
-                                    extractExtension(
-                                            fileName
-                                    );
+                String extension =
+                        extractExtension(
+                                fileName
+                        );
 
-                            extensions.put(
-                                    extension,
-                                    extensions.getOrDefault(
-                                            extension,
-                                            0
-                                    ) + 1
-                            );
+                extensions.put(
+                        extension,
+                        1
+                );
 
-                            files.add(
-                                    FileInfo.builder()
-                                            .fileName(fileName)
-                                            .extension(extension)
-                                            .path(
-                                                    path.toString()
-                                            )
-                                            .build()
-                            );
-                        });
+                files.add(
+                        FileInfo.builder()
+                                .fileName(fileName)
+                                .extension(extension)
+                                .path(
+                                        scanTarget.getAbsolutePath()
+                                )
+                                .build()
+                );
+
+            } else {
+
+                // =========================
+                // folder scan info
+                // =========================
+
+                try (Stream<Path> paths =
+                             Files.walk(
+                                     scanTarget.toPath()
+                             )) {
+
+                    paths
+                            .filter(Files::isRegularFile)
+                            .forEach(path -> {
+
+                                String fileName =
+                                        path.getFileName()
+                                                .toString();
+
+                                String extension =
+                                        extractExtension(
+                                                fileName
+                                        );
+
+                                extensions.put(
+                                        extension,
+                                        extensions.getOrDefault(
+                                                extension,
+                                                0
+                                        ) + 1
+                                );
+
+                                files.add(
+                                        FileInfo.builder()
+                                                .fileName(fileName)
+                                                .extension(extension)
+                                                .path(
+                                                        path.toString()
+                                                )
+                                                .build()
+                                );
+                            });
+                }
             }
 
+            log.info(
+                    "TOTAL FILES: {}",
+                    files.size()
+            );
+
+            log.info(
+                    "TOTAL FINDINGS: {}",
+                    findings.size()
+            );
+
+            log.info("========== SCAN END ==========");
+
             // =========================
-            // 6. build response
+            // response
             // =========================
 
             return ScanSummary.builder()
@@ -183,7 +297,7 @@ public class ScanServiceImpl implements ScanService {
     }
 
     // =========================
-    // helper method
+    // helper
     // =========================
 
     private String extractExtension(

@@ -20,6 +20,21 @@ public class ScanEngine {
     ) {
 
         this.detectors = detectors;
+
+        log.warn(
+                "TOTAL DETECTORS LOADED: {}",
+                detectors.size()
+        );
+
+        for (ScanDetector detector
+                : detectors) {
+
+            log.warn(
+                    "DETECTOR: {}",
+                    detector.getClass()
+                            .getSimpleName()
+            );
+        }
     }
 
     // =========================

@@ -5,60 +5,103 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 @Slf4j
 @Component
 public class NetworkDetector implements ScanDetector {
 
-    // =========================
-    // suspicious network keywords
-    // =========================
+    private static final List<String> NETWORK_PATTERNS = List.of(
 
-    private static final List<String> NETWORK_PATTERNS =
-            List.of(
+            "http://",
+            "https://",
 
-                    "http://",
-                    "https://",
+            "socket(",
+            "serversocket(",
 
-                    "socket(",
-                    "serversocket(",
+            "discord.com/api/webhooks",
+            "discordapp.com/api/webhooks",
 
-                    "discord.com/api/webhooks",
-                    "discordapp.com/api/webhooks",
+            "api.telegram.org",
 
-                    "api.telegram.org",
+            "ngrok",
+            "pastebin",
+            "webhook",
 
-                    "ngrok",
+            "newsocket(",
+            "newserversocket(",
 
-                    "pastebin",
+            "runtime.getruntime().exec",
+            "processbuilder(",
 
-                    "webhook"
-            );
+            "httpurlconnection",
+            "urlconnection",
+
+            "okhttpclient",
+            "resttemplate",
+            "webclient",
+
+            "curl ",
+            "wget ",
+
+            "inetaddress",
+            "datagramsocket",
+            "multicastsocket"
+    );
 
     @Override
     public List<Finding> detect(File file) {
 
-        List<Finding> findings =
-                new ArrayList<>();
+        List<Finding> findings = new ArrayList<>();
 
         try {
 
             // =========================
-            // đọc toàn bộ file
+            // validate
             // =========================
 
+            if (file == null
+                    || !file.exists()
+                    || file.isDirectory()) {
+
+                return findings;
+            }
+
+            // =========================
+            // read file
+            // =========================
+
+            byte[] bytes =
+                    Files.readAllBytes(file.toPath());
+
+            if (bytes.length == 0) {
+                return findings;
+            }
+
             String content =
-                    Files.readString(file.toPath());
+                    new String(
+                            bytes,
+                            StandardCharsets.UTF_8
+                    );
 
             // =========================
             // normalize
             // =========================
 
-            String normalized =
+            String normalizedContent =
                     normalize(content);
+
+            String decodedBase64 =
+                    tryDecodeBase64(content);
+
+            String mergedContent =
+                    normalizedContent
+                            + "\n"
+                            + normalize(decodedBase64);
 
             // =========================
             // scan patterns
@@ -69,44 +112,42 @@ public class NetworkDetector implements ScanDetector {
                 String normalizedPattern =
                         normalize(pattern);
 
-                if (normalized.contains(
-                        normalizedPattern
-                )) {
+                boolean matched =
+                        mergedContent.contains(
+                                normalizedPattern
+                        );
 
-                    findings.add(
-                            Finding.builder()
-                                    .file(
-                                            file.getAbsolutePath()
-                                    )
-                                    .type(
-                                            "NETWORK_ACCESS"
-                                    )
-                                    .severity(
-                                            calculateSeverity(
-                                                    pattern
-                                            )
-                                    )
-                                    .matchedKeyword(
-                                            pattern
-                                    )
-                                    .codeSnippet(
-                                            extractSnippet(
-                                                    content,
-                                                    pattern
-                                            )
-                                    )
-                                    .detector(
-                                            "NetworkDetector"
-                                    )
-                                    .build()
-                    );
-
-                    log.warn(
-                            "Network pattern detected: {} in {}",
-                            pattern,
-                            file.getName()
-                    );
+                if (!matched) {
+                    continue;
                 }
+
+                findings.add(
+                        Finding.builder()
+                                .file(
+                                        file.getAbsolutePath()
+                                )
+                                .type(
+                                        "NETWORK_ACCESS"
+                                )
+                                .severity(
+                                        calculateSeverity(
+                                                pattern
+                                        )
+                                )
+                                .matchedKeyword(
+                                        pattern
+                                )
+                                .codeSnippet(
+                                        extractSnippet(
+                                                content,
+                                                pattern
+                                        )
+                                )
+                                .detector(
+                                        "NetworkDetector"
+                                )
+                                .build()
+                );
             }
 
         } catch (Exception e) {
@@ -141,7 +182,7 @@ public class NetworkDetector implements ScanDetector {
     }
 
     // =========================
-    // severity calculation
+    // severity
     // =========================
 
     private String calculateSeverity(
@@ -167,7 +208,7 @@ public class NetworkDetector implements ScanDetector {
     }
 
     // =========================
-    // extract matched snippet
+    // extract snippet
     // =========================
 
     private String extractSnippet(
@@ -188,17 +229,55 @@ public class NetworkDetector implements ScanDetector {
             }
 
             int start =
-                    Math.max(0, index - 40);
+                    Math.max(
+                            0,
+                            index - 40
+                    );
 
             int end =
                     Math.min(
                             content.length(),
-                            index + 80
+                            index + 120
                     );
 
             return content.substring(
                     start,
                     end
+            );
+
+        } catch (Exception e) {
+
+            return "";
+        }
+    }
+
+    // =========================
+    // decode base64
+    // =========================
+
+    private String tryDecodeBase64(
+            String content
+    ) {
+
+        try {
+
+            String cleaned =
+                    content.replaceAll(
+                            "[^A-Za-z0-9+/=]",
+                            ""
+                    );
+
+            if (cleaned.length() < 16) {
+                return "";
+            }
+
+            byte[] decoded =
+                    Base64.getDecoder()
+                            .decode(cleaned);
+
+            return new String(
+                    decoded,
+                    StandardCharsets.UTF_8
             );
 
         } catch (Exception e) {

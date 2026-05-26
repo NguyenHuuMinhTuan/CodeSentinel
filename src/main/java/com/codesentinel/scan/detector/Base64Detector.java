@@ -1,10 +1,12 @@
 package com.codesentinel.scan.detector;
 
 import com.codesentinel.scan.model.Finding;
+import com.codesentinel.scan.util.ContentNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -16,57 +18,160 @@ import java.util.regex.Pattern;
 @Component
 public class Base64Detector implements ScanDetector {
 
-    // regex tìm chuỗi base64 dài
+    /*
+     * =========================
+     * BASE64 REGEX
+     * =========================
+     *
+     * match:
+     * cG93ZXJzaGVsbA==
+     * Y21kLmV4ZQ==
+     *
+     * hỗ trợ:
+     * + /
+     * - _
+     */
+
     private static final Pattern BASE64_PATTERN =
             Pattern.compile(
-                    "[A-Za-z0-9+/]{20,}={0,2}"
+                    "[\"']([A-Za-z0-9+/=_-]{8,})[\"']"
+            );
+
+    /*
+     * =========================
+     * DANGEROUS PAYLOADS
+     * =========================
+     */
+
+    private static final List<String>
+            DANGEROUS_KEYWORDS =
+            List.of(
+
+                    "powershell",
+                    "cmd.exe",
+                    "wget",
+                    "curl",
+                    "runtime",
+                    "processbuilder",
+                    "exec",
+                    "eval",
+                    "bash",
+                    "socket",
+                    "webhook",
+                    "discord",
+                    "token",
+                    "stealer"
             );
 
     @Override
-    public List<Finding> detect(File file) {
+    public List<Finding> detect(
+            File file
+    ) {
 
         List<Finding> findings =
                 new ArrayList<>();
 
         try {
 
-            String content =
-                    Files.readString(file.toPath());
+            /*
+             * =========================
+             * READ FILE
+             * =========================
+             */
 
-            List<String> base64Strings =
-                    extractBase64Strings(content);
-
-            for (String encoded : base64Strings) {
-
-                if (!isValidBase64(encoded)) {
-                    continue;
-                }
-
-                String decoded =
-                        decodeBase64(encoded);
-
-                if (containsDangerousPayload(decoded)) {
-
-                    findings.add(
-                            Finding.builder()
-                                    .file(
-                                            file.getAbsolutePath()
-                                    )
-                                    .type(
-                                            "BASE64_OBFUSCATION"
-                                    )
-                                    .severity(
-                                            "HIGH"
-                                    )
-                                    .matchedKeyword(
-                                            encoded
-                                    )
-                                    .codeSnippet(decoded)
-                                    .detector(
-                                            "Base64Detector"
-                                    )
-                                    .build()
+            List<String> lines =
+                    Files.readAllLines(
+                            file.toPath()
                     );
+
+            /*
+             * =========================
+             * SCAN EACH LINE
+             * =========================
+             */
+
+            for (int i = 0;
+                 i < lines.size();
+                 i++) {
+
+                String rawLine =
+                        lines.get(i);
+
+                int lineNumber =
+                        i + 1;
+
+                /*
+                 * extract base64 strings
+                 */
+
+                List<String> candidates =
+                        extractBase64Strings(
+                                rawLine
+                        );
+
+
+                /*
+                 * scan từng candidate
+                 */
+
+                for (String encoded : candidates) {
+
+                    /*
+                     * validate
+                     */
+
+                    if (!isValidBase64(encoded)) {
+
+                        log.debug(
+                                "Invalid base64: {}",
+                                encoded
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                     * decode
+                     */
+
+                    String decoded =
+                            decodeBase64(encoded);
+
+
+                    /*
+                     * detect dangerous payload
+                     */
+
+                    if (containsDangerousPayload(
+                            decoded
+                    )) {
+
+                        findings.add(
+                                Finding.builder()
+                                        .file(
+                                                file.getAbsolutePath()
+                                        )
+                                        .line(
+                                                lineNumber
+                                        )
+                                        .type(
+                                                "BASE64_OBFUSCATION"
+                                        )
+                                        .severity(
+                                                "HIGH"
+                                        )
+                                        .matchedKeyword(
+                                                encoded
+                                        )
+                                        .codeSnippet(
+                                                rawLine
+                                        )
+                                        .detector(
+                                                "Base64Detector"
+                                        )
+                                        .build()
+                        );
+                    }
                 }
             }
 
@@ -81,11 +186,14 @@ public class Base64Detector implements ScanDetector {
         return findings;
     }
 
-    // =========================
-    // extract chuỗi base64
-    // =========================
+    /*
+     * =========================
+     * EXTRACT BASE64 STRINGS
+     * =========================
+     */
 
-    private List<String> extractBase64Strings(
+    private List<String>
+    extractBase64Strings(
             String content
     ) {
 
@@ -93,19 +201,25 @@ public class Base64Detector implements ScanDetector {
                 new ArrayList<>();
 
         Matcher matcher =
-                BASE64_PATTERN.matcher(content);
+                BASE64_PATTERN.matcher(
+                        content
+                );
 
         while (matcher.find()) {
 
-            result.add(matcher.group());
+            result.add(
+                    matcher.group(1)
+            );
         }
 
         return result;
     }
 
-    // =========================
-    // validate base64
-    // =========================
+    /*
+     * =========================
+     * VALIDATE BASE64
+     * =========================
+     */
 
     private boolean isValidBase64(
             String value
@@ -124,9 +238,11 @@ public class Base64Detector implements ScanDetector {
         }
     }
 
-    // =========================
-    // decode
-    // =========================
+    /*
+     * =========================
+     * DECODE BASE64
+     * =========================
+     */
 
     private String decodeBase64(
             String encoded
@@ -138,7 +254,10 @@ public class Base64Detector implements ScanDetector {
                     Base64.getDecoder()
                             .decode(encoded);
 
-            return new String(decodedBytes);
+            return new String(
+                    decodedBytes,
+                    StandardCharsets.UTF_8
+            );
 
         } catch (Exception e) {
 
@@ -146,21 +265,24 @@ public class Base64Detector implements ScanDetector {
         }
     }
 
-    // =========================
-    // detect payload nguy hiểm
-    // =========================
+    /*
+     * =========================
+     * DETECT DANGEROUS PAYLOAD
+     * =========================
+     */
 
-    private boolean containsDangerousPayload(
+    private boolean
+    containsDangerousPayload(
             String decoded
     ) {
 
         String lower =
                 decoded.toLowerCase();
 
-        return lower.contains("powershell")
-                || lower.contains("cmd.exe")
-                || lower.contains("wget")
-                || lower.contains("curl")
-                || lower.contains("runtime");
+        return DANGEROUS_KEYWORDS
+                .stream()
+                .anyMatch(
+                        lower::contains
+                );
     }
 }

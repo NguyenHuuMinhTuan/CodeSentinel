@@ -16,8 +16,6 @@ public class ScanController {
     @PostMapping("/upload")
     public ScanSummary uploadZip(@RequestParam("file") MultipartFile file) {
 
-        System.out.println("API HIT");
-
         return scanService.scanZip(file);
     }
 }

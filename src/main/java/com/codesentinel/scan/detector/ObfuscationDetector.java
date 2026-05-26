@@ -15,6 +15,17 @@ import java.util.regex.Pattern;
 @Component
 public class ObfuscationDetector implements ScanDetector {
 
+    private static final List<String>
+            OBFUSCATION_PATTERNS = List.of(
+
+            "eval(",
+            "atob(",
+            "fromcharcode",
+            "base64",
+            "decode",
+            "unescape"
+    );
+
     // =========================
     // invisible unicode chars
     // =========================

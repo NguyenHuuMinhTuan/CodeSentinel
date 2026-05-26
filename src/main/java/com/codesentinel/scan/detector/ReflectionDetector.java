@@ -5,8 +5,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 @Slf4j
@@ -14,200 +16,300 @@ import java.util.List;
 public class ReflectionDetector implements ScanDetector {
 
     // =========================
-    // reflection patterns
+    // PATTERNS (normalized)
     // =========================
 
-    private static final List<String> REFLECTION_PATTERNS =
-            List.of(
-
-                    "Class.forName",
-
-                    "getDeclaredMethod",
-                    "getDeclaredMethods",
-
-                    "getDeclaredField",
-                    "getDeclaredFields",
-
-                    "setAccessible(true)",
-
-                    "Method.invoke",
-                    "invoke(",
-
-                    "ClassLoader",
-
-                    "defineClass",
-
-                    "java.lang.reflect"
-            );
+    private static final List<String> PATTERNS = List.of(
+            "class.forname",
+            "getmethod",
+            "getdeclaredmethod",
+            "getdeclaredfield",
+            "setaccessible",
+            "method.invoke",
+            "invoke",
+            "classloader",
+            "defineclass",
+            "java.lang.reflect"
+    );
 
     @Override
     public List<Finding> detect(File file) {
 
-        List<Finding> findings =
-                new ArrayList<>();
+        List<Finding> findings = new ArrayList<>();
 
         try {
 
-            // =========================
-            // read file content
-            // =========================
+            if (file == null || !file.exists() || file.isDirectory()) {
+                log.warn("[ReflectionDetector] INVALID FILE");
+                return findings;
+            }
 
-            String content =
-                    Files.readString(file.toPath());
+            byte[] bytes = Files.readAllBytes(file.toPath());
+
+            if (bytes.length == 0) {
+                log.warn("[ReflectionDetector] EMPTY FILE");
+                return findings;
+            }
+
+            String content = new String(bytes, StandardCharsets.UTF_8);
 
             // =========================
             // normalize
             // =========================
+            String normalized = normalize(content);
+            // =========================
+            // base64 decode
+            // =========================
+            String decoded = tryDecodeBase64(content);
 
-            String normalized =
-                    normalize(content);
+            String merged = normalized + "\n" + normalize(decoded);
 
             // =========================
-            // scan patterns
+            // CHAIN FLAGS
             // =========================
 
-            for (String pattern : REFLECTION_PATTERNS) {
+            boolean hasForName = merged.contains("class.forname");
+            boolean hasGetMethod = merged.contains("getmethod");
+            boolean hasInvoke = merged.contains("invoke");
+            boolean hasClassLoader = merged.contains("classloader");
+            boolean hasDefineClass = merged.contains("defineclass");
 
-                String normalizedPattern =
-                        normalize(pattern);
+            log.info("CHAIN FLAGS => forName={}, getMethod={}, invoke={}, classLoader={}, defineClass={}",
+                    hasForName, hasGetMethod, hasInvoke, hasClassLoader, hasDefineClass);
 
-                if (normalized.contains(
-                        normalizedPattern
-                )) {
+            int chainScore = calculateChainScore(
+                    hasForName,
+                    hasGetMethod,
+                    hasInvoke,
+                    hasClassLoader,
+                    hasDefineClass
+            );
 
-                    findings.add(
-                            Finding.builder()
-                                    .file(
-                                            file.getAbsolutePath()
-                                    )
-                                    .type(
-                                            "REFLECTION_ABUSE"
-                                    )
-                                    .severity(
-                                            calculateSeverity(
-                                                    pattern
-                                            )
-                                    )
-                                    .matchedKeyword(
-                                            pattern
-                                    )
-                                    .codeSnippet(
-                                            extractSnippet(
-                                                    content,
-                                                    pattern
-                                            )
-                                    )
-                                    .detector(
-                                            "ReflectionDetector"
-                                    )
-                                    .build()
-                    );
+            // =========================
+            // PATTERN SCAN
+            // =========================
 
-                    log.warn(
-                            "Reflection pattern detected: {} in {}",
-                            pattern,
-                            file.getName()
-                    );
-                }
+            for (String pattern : PATTERNS) {
+
+                String np = normalize(pattern);
+
+                boolean matched = merged.contains(np);
+
+                if (!matched) continue;
+
+                int severityScore = calculateSeverityScore(pattern, chainScore);
+
+                findings.add(
+                        Finding.builder()
+                                .file(file.getAbsolutePath())
+                                .line(findLineNumber(content, pattern))
+                                .type("REFLECTION_ABUSE")
+                                .severity(mapSeverity(severityScore))
+                                .matchedKeyword(pattern)
+                                .codeSnippet(extractSnippet(content, pattern))
+                                .detector("ReflectionDetector")
+                                .build()
+                );
+            }
+
+            // =========================
+            // CHAIN DETECTION
+            // =========================
+
+            if (chainScore >= 2) {
+
+                findings.add(
+                        Finding.builder()
+                                .file(file.getAbsolutePath())
+                                .type("REFLECTION_CHAIN")
+                                .severity(mapSeverity(chainScore * 30))
+                                .matchedKeyword("reflection-chain")
+                                .codeSnippet("Detected reflection execution chain pattern")
+                                .detector("ReflectionDetector")
+                                .build()
+                );
             }
 
         } catch (Exception e) {
-
-            log.error(
-                    "ReflectionDetector error: {}",
-                    file.getAbsolutePath(),
-                    e
-            );
+            log.error("[ReflectionDetector] ERROR", e);
         }
 
         return findings;
     }
 
     // =========================
-    // normalize content
+    // DEBUG HELPER
     // =========================
 
-    private String normalize(
-            String content
-    ) {
+    private String preview(String content) {
 
-        if (content == null) {
-            return "";
-        }
+        if (content == null) return "";
+
+        content = content.trim();
+
+        if (content.length() <= 300) return content;
+
+        return content.substring(0, 300) + "\n...TRUNCATED";
+    }
+
+    // =========================
+    // NORMALIZE
+    // =========================
+
+    private String normalize(String content) {
+
+        if (content == null) return "";
 
         return content
                 .toLowerCase()
                 .replaceAll("\\s+", "")
-                .replaceAll(
-                        "[\\u200B-\\u200D\\uFEFF]",
-                        ""
-                );
+                .replaceAll("[\\u200B-\\u200D\\uFEFF]", "");
     }
 
     // =========================
-    // severity calculator
+    // BASE64 DETECT (safe mode)
     // =========================
 
-    private String calculateSeverity(
-            String pattern
+    private String tryDecodeBase64(String content) {
+
+        try {
+
+            String cleaned = content.replaceAll("[^A-Za-z0-9+/=]", "");
+
+            if (cleaned.length() < 16 || cleaned.length() > 5000) {
+                return "";
+            }
+
+            byte[] decoded = Base64.getDecoder().decode(cleaned);
+
+            String result = new String(decoded, StandardCharsets.UTF_8);
+
+            // avoid garbage decode flooding
+            if (result.length() > 10000) return "";
+
+            return result;
+
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // =========================
+    // CHAIN SCORE ENGINE
+    // =========================
+
+    private int calculateChainScore(
+            boolean hasForName,
+            boolean hasGetMethod,
+            boolean hasInvoke,
+            boolean hasClassLoader,
+            boolean hasDefineClass
     ) {
 
-        String lower =
-                pattern.toLowerCase();
+        int score = 0;
 
-        if (lower.contains("defineclass")
-                || lower.contains("setaccessible")) {
+        if (hasForName) score += 1;
+        if (hasGetMethod) score += 1;
+        if (hasInvoke) score += 2;
+        if (hasClassLoader) score += 2;
+        if (hasDefineClass) score += 3;
 
-            return "HIGH";
+        return score;
+    }
+
+    // =========================
+    // SEVERITY SCORE
+    // =========================
+
+    private int calculateSeverityScore(String pattern, int chainScore) {
+
+        int base = 10;
+
+        String p = pattern.toLowerCase();
+
+        if (p.contains("defineclass") || p.contains("classloader")) {
+            base += 40;
         }
 
-        if (lower.contains("invoke")
-                || lower.contains("forname")) {
-
-            return "MEDIUM";
+        if (p.contains("invoke")) {
+            base += 20;
         }
 
+        return base + (chainScore * 10);
+    }
+
+    // =========================
+    // MAP SEVERITY
+    // =========================
+
+    private String mapSeverity(int score) {
+
+        if (score >= 80) return "HIGH";
+        if (score >= 50) return "MEDIUM";
         return "LOW";
     }
 
     // =========================
-    // snippet extractor
+    // SNIPPET
     // =========================
 
-    private String extractSnippet(
+    private String extractSnippet(String content, String keyword) {
+
+        try {
+
+            int index = content.toLowerCase()
+                    .indexOf(keyword.toLowerCase());
+
+            if (index < 0) return "";
+
+            int start = Math.max(0, index - 40);
+            int end = Math.min(content.length(), index + 100);
+
+            return content.substring(start, end);
+
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // =========================
+// LINE NUMBER
+// =========================
+
+    private Integer findLineNumber(
             String content,
             String keyword
     ) {
 
         try {
 
+            String lowerContent =
+                    content.toLowerCase();
+
+            String lowerKeyword =
+                    keyword.toLowerCase();
+
             int index =
-                    content.toLowerCase()
-                            .indexOf(
-                                    keyword.toLowerCase()
-                            );
+                    lowerContent.indexOf(lowerKeyword);
 
             if (index < 0) {
-                return "";
+                return null;
             }
 
-            int start =
-                    Math.max(0, index - 40);
+            int line = 1;
 
-            int end =
-                    Math.min(
-                            content.length(),
-                            index + 80
-                    );
+            for (int i = 0; i < index; i++) {
 
-            return content.substring(
-                    start,
-                    end
-            );
+                if (content.charAt(i) == '\n') {
+                    line++;
+                }
+            }
+
+            return line;
 
         } catch (Exception e) {
 
-            return "";
+            return null;
         }
     }
 }
