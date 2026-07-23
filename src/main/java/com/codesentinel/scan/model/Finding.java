@@ -1,6 +1,5 @@
 package com.codesentinel.scan.model;
 
-
 import lombok.Builder;
 import lombok.Data;
 
@@ -16,9 +15,17 @@ public class Finding {
 
     private String severity;
 
+    private Integer riskScore;
+
+    private String category;
+
     private String matchedKeyword;
 
     private String codeSnippet;
 
     private String detector;
+
+    private String recommendation;
+
+    private String cwe;
 }

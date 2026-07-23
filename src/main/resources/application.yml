@@ -1,4 +1,28 @@
 spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          facebook:
+            client-id: 2018992565377761
+            client-secret: 53b02ac08b529abffc99deb27210ebfa
+            client-name: Facebook
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope:
+                - public_profile
+        provider:
+          facebook:
+            authorization-uri: https://www.facebook.com/dialog/oauth
+            token-uri: https://graph.facebook.com/oauth/access_token
+            user-info-uri: https://graph.facebook.com/me?fields=id,name,email
+            user-name-attribute: id
+    jwt:
+      secret-key: aGVsbG93b3JsZGl3aWxsYnVpbGRhcHJvamVjdHdoZXJlZXZlcnlvbmVjYW51c2VyZnJlZQ==
+      access-token-expiration: 900000
+      refresh-token-expiration: 2592000000
+      issuer: CodeSentinel
+
   datasource:
       url: jdbc:postgresql://localhost:5432/codesentinel_db
       username: postgres
@@ -18,3 +42,8 @@ spring:
 
 server:
   port: 8080
+
+google:
+  recaptcha:
+    secret: "6LcMLR0tAAAAADDPZO252xbvkEN1fL8lDAbC8PTU"
+    url: "https://www.google.com/recaptcha/api/siteverify"

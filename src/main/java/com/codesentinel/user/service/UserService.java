@@ -27,7 +27,6 @@ public class UserService {
         User user = User.builder()
                 .fullName(request.getUsername())
                 .email(request.getEmail())
-                .password(request.getPassword())
                 .createdAt(LocalDateTime.now())
                 .build();
 
