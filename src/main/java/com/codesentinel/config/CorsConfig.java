@@ -16,7 +16,7 @@ public class CorsConfig {
 
         config.setAllowedOrigins(List.of(
                 "http://localhost:5173",
-                "https://codesentinal-cagrbwolv-nguyenhuuminhtuans-projects.vercel.app"
+                "https://codesentinal-eight.vercel.app"
         ));
 
         config.setAllowedMethods(List.of(
