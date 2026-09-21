@@ -3,6 +3,7 @@ package com.codesentinel.auth.application;
 import com.codesentinel.auth.domain.RefreshToken;
 import com.codesentinel.auth.domain.User;
 import com.codesentinel.auth.dto.request.LoginRequest;
+import com.codesentinel.auth.dto.request.RefreshTokenRequest;
 import com.codesentinel.auth.dto.request.RegisterRequest;
 import com.codesentinel.auth.dto.response.AuthResponse;
 import com.codesentinel.auth.dto.response.UserResponse;
@@ -65,6 +66,48 @@ public class AuthServiceImpl implements AuthService {
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new BadRequestException("Email hoặc password không đúng");
         }
+
+        return issueTokens(user);
+    }
+
+    @Override
+    public AuthResponse refresh(RefreshTokenRequest request) {
+
+        RefreshToken stored = refreshTokenRepository.findByToken(request.getRefreshToken())
+                .orElseThrow(() -> new BadRequestException("Invalid refresh token"));
+
+        if (stored.isRevoked()) {
+            throw new BadRequestException("Refresh token has been revoked");
+        }
+
+        if (stored.getExpiryDate().isBefore(Instant.now())) {
+            throw new BadRequestException("Refresh token expired");
+        }
+
+        User user = stored.getUser();
+
+        if (!jwtService.validateToken(request.getRefreshToken(), user)) {
+            throw new BadRequestException("Invalid refresh token");
+        }
+
+        // Rotation: refresh token chỉ dùng được một lần, chống replay nếu bị lộ.
+        stored.setRevoked(true);
+        refreshTokenRepository.save(stored);
+
+        return issueTokens(user);
+    }
+
+    @Override
+    public void logout(RefreshTokenRequest request) {
+
+        RefreshToken stored = refreshTokenRepository.findByToken(request.getRefreshToken())
+                .orElseThrow(() -> new BadRequestException("Invalid refresh token"));
+
+        stored.setRevoked(true);
+        refreshTokenRepository.save(stored);
+    }
+
+    private AuthResponse issueTokens(User user) {
 
         String accessToken = jwtService.generateAccessToken(user);
 

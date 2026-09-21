@@ -49,4 +49,10 @@ public interface JwtService {
      */
     boolean isTokenExpired(String token);
 
+    /**
+     * Kiểm tra token có phải access token không (chặn việc dùng refresh token
+     * để gọi thẳng API như access token).
+     */
+    boolean isAccessToken(String token);
+
 }

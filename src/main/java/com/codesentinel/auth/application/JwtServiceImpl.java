@@ -114,4 +114,15 @@ public class JwtServiceImpl implements JwtService {
 
         return expiration.before(new Date());
     }
+
+    @Override
+    public boolean isAccessToken(String token) {
+
+        String tokenType = extractClaim(
+                token,
+                claims -> claims.get(JwtClaim.TOKEN_TYPE, String.class)
+        );
+
+        return TOKEN_TYPE_ACCESS.equals(tokenType);
+    }
 }

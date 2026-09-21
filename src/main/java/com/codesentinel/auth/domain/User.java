@@ -35,6 +35,16 @@ public class User {
     @Column(nullable = false)
     private Boolean active = true;
 
+    /**
+     * Không đặt nullable=false: cột mới thêm vào bảng users đã có dữ liệu,
+     * ràng buộc NOT NULL sẽ làm ddl-auto=update fail nếu chưa backfill dữ liệu cũ.
+     * Giá trị mặc định cho user mới do @Builder.Default đảm nhiệm; user cũ (role=null)
+     * được JwtAuthenticationFilter coi như USER.
+     */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    private Role role = Role.USER;
+
     @Column(nullable = false)
     private LocalDateTime createdAt;
 

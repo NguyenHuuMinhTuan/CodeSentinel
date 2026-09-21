@@ -2,6 +2,7 @@ package com.codesentinel.auth.api;
 
 import com.codesentinel.auth.application.AuthService;
 import com.codesentinel.auth.dto.request.LoginRequest;
+import com.codesentinel.auth.dto.request.RefreshTokenRequest;
 import com.codesentinel.auth.dto.request.RegisterRequest;
 import com.codesentinel.auth.dto.response.AuthResponse;
 import com.codesentinel.auth.dto.response.UserResponse;
@@ -39,6 +40,30 @@ public class AuthController {
 
         return ResponseEntity.ok(
                 ApiResponse.success(data, "Login successfully")
+        );
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<ApiResponse<AuthResponse>> refresh(
+            @Valid @RequestBody RefreshTokenRequest request
+    ) {
+
+        AuthResponse data = authService.refresh(request);
+
+        return ResponseEntity.ok(
+                ApiResponse.success(data, "Token refreshed successfully")
+        );
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<Void>> logout(
+            @Valid @RequestBody RefreshTokenRequest request
+    ) {
+
+        authService.logout(request);
+
+        return ResponseEntity.ok(
+                ApiResponse.success(null, "Logout successfully")
         );
     }
 }

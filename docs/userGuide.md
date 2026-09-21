@@ -32,11 +32,14 @@ Mọi request đi qua `RequestLoggingFilter` trước khi tới controller; mọ
 
 1. `CodeSentinelApplication.main()` chạy `SpringApplication.run(...)`.
 2. Spring nạp cấu hình từ [application.yml](../src/main/resources/application.yml) và [application.properties](../src/main/resources/application.properties): JWT secret/expiration, OAuth2 Facebook, datasource, Google reCAPTCHA.
-3. [`shared/config/SecurityConfig`](../src/main/java/com/codesentinel/shared/config/SecurityConfig.java) khởi tạo `SecurityFilterChain`:
+3. [`auth/infrastructure/SecurityConfig`](../src/main/java/com/codesentinel/auth/infrastructure/SecurityConfig.java) khởi tạo `SecurityFilterChain` (đặt trong module `auth` chứ không phải `shared` vì nó phụ thuộc trực tiếp `JwtService`/`UserRepository`):
    - Bật CORS (chi tiết ở [`CorsConfig`](../src/main/java/com/codesentinel/shared/config/CorsConfig.java): chỉ cho phép `http://localhost:5173` và domain Vercel FE).
    - Tắt CSRF.
-   - `permitAll()` cho `/api/auth/**` và `/api/scans/**`; mọi request khác yêu cầu authenticated.
-   - Bật `oauth2Login()` (chưa có `successHandler` nối vào JWT nội bộ — vẫn là TODO, xem mục 6).
+   - `permitAll()` cho `/api/auth/**` và `/api/scans/**`.
+   - `GET`/`POST /api/users` yêu cầu role `ADMIN`.
+   - Mọi request khác yêu cầu đã đăng nhập (`authenticated()`).
+   - Gắn [`JwtAuthenticationFilter`](../src/main/java/com/codesentinel/auth/infrastructure/JwtAuthenticationFilter.java) trước `UsernamePasswordAuthenticationFilter` để parse access token trên mọi request.
+   - Bật `oauth2Login()` (chưa có `successHandler` nối vào JWT nội bộ — vẫn là TODO, xem mục 7).
 4. `ScanEngine` (`@Component` trong `scan/domain/engine`) được Spring khởi tạo bằng cách inject **toàn bộ danh sách bean implements `ScanDetector`** — log số lượng & tên detector khi start.
 
 > Đã xoá: `ApplicationInit` (in JWT secret ra console log — rò rỉ thông tin nhạy cảm) và cơ chế `DataBuffer` (một map tĩnh in-memory chỉ được ghi, không nơi nào đọc lại — chết hoàn toàn). `JwtConfig`/`OAuthConfig` vẫn là Spring bean, inject trực tiếp nơi cần dùng.
@@ -68,29 +71,56 @@ Client → AuthController.login(LoginRequest)
 ```
 
 1. Tìm user theo `email`; sai email hoặc password → `BadRequestException("Email hoặc password không đúng")`.
-2. Sinh **access token** + **refresh token** qua [`JwtService`](../src/main/java/com/codesentinel/auth/application/JwtServiceImpl.java).
-3. Lưu `refreshToken` vào bảng `refresh_token`.
-4. Trả `AuthResponse` (`accessToken`, `refreshToken`, `tokenType = "Bearer"`, `expiresIn`).
+2. Gọi `issueTokens(user)` (helper dùng chung với `refresh()`): sinh **access token** + **refresh token** qua [`JwtService`](../src/main/java/com/codesentinel/auth/application/JwtServiceImpl.java), lưu `refreshToken` vào bảng `refresh_token`.
+3. Trả `AuthResponse` (`accessToken`, `refreshToken`, `tokenType = "Bearer"`, `expiresIn`).
 
-### 3.3 Sinh & xác thực JWT
+### 3.3 Làm mới token — `POST /api/auth/refresh`
 
-[`JwtServiceImpl`](../src/main/java/com/codesentinel/auth/application/JwtServiceImpl.java) dùng `jjwt`, ký HMAC-SHA với secret từ `JwtConfig`. Access token hết hạn sau 15 phút, refresh token sau 30 ngày (cấu hình trong `application.yml`). Tên các claim (`user_id`, `username`, `token_type`) giờ chỉ khai báo **một nơi duy nhất**: [`auth/infrastructure/JwtClaim`](../src/main/java/com/codesentinel/auth/infrastructure/JwtClaim.java) — trước refactor có 2 class trùng tên ở 2 package khác nhau, đã gộp lại.
+```
+Client → AuthController.refresh(RefreshTokenRequest{refreshToken})
+       → AuthService.refresh()
+```
 
-> `validateToken()`/`isTokenExpired()` đã có sẵn trong `JwtService` nhưng **chưa có filter nào gọi để xác thực access token** trên request — vì hiện tại mọi route đều `permitAll()` nên chưa phát sinh vấn đề, nhưng cần bổ sung một `OncePerRequestFilter` xác thực JWT nếu sau này có route yêu cầu đăng nhập.
+1. Tra `refreshToken` trong bảng `refresh_token`; không tồn tại → `BadRequestException("Invalid refresh token")`.
+2. Kiểm tra chưa bị revoke (`stored.isRevoked()`) và chưa hết hạn (`expiryDate`).
+3. Verify chữ ký/username qua `jwtService.validateToken()`.
+4. **Rotation**: revoke ngay refresh token vừa dùng (`stored.setRevoked(true)`), rồi phát hành cặp access/refresh token **mới** qua `issueTokens()`. Refresh token chỉ dùng được đúng 1 lần — nếu bị đánh cắp và dùng lại sau khi chủ sở hữu đã refresh, request đó sẽ bị từ chối vì token cũ đã revoke.
 
-### 3.4 OAuth2 (Facebook)
+### 3.4 Đăng xuất — `POST /api/auth/logout`
+
+`AuthService.logout()` tra `refreshToken` trong DB và set `revoked = true`. Từ thời điểm này refresh token không thể dùng để lấy access token mới nữa (access token cũ đã phát hành trước đó vẫn còn hiệu lực cho tới khi hết hạn tự nhiên — hệ thống chưa có cơ chế thu hồi access token giữa chừng, vì access token không được lưu DB, chỉ refresh token mới lưu).
+
+### 3.5 Xác thực access token trên mỗi request
+
+[`JwtAuthenticationFilter`](../src/main/java/com/codesentinel/auth/infrastructure/JwtAuthenticationFilter.java) (`OncePerRequestFilter`, gắn thủ công vào `SecurityFilterChain`, **không** đánh dấu `@Component` để tránh bị Spring Boot tự đăng ký thêm 1 lần nữa ở tầng servlet):
+
+1. Đọc header `Authorization: Bearer <token>`. Không có/không đúng định dạng → bỏ qua, coi như request ẩn danh.
+2. `jwtService.isAccessToken(token)` — chặn việc dùng **refresh token** gọi thẳng API như access token (2 loại token phân biệt bằng claim `token_type`).
+3. Lấy `username` từ token, load `User` qua `UserRepository`, verify bằng `jwtService.validateToken()`.
+4. Nếu hợp lệ: nạp `UsernamePasswordAuthenticationToken(user, null, [ROLE_<user.role>])` vào `SecurityContextHolder` — từ đây `hasRole("ADMIN")` trong `SecurityConfig` mới có dữ liệu để so khớp.
+5. Mọi lỗi (token hết hạn, sai chữ ký, user không tồn tại) đều bị nuốt (log debug) chứ không throw — để Spring Security tự quyết định 401/403 theo rule của từng route, thay vì làm sập filter chain.
+
+> Trước refactor: `validateToken()`/`isTokenExpired()` đã có sẵn trong `JwtService` nhưng **không có filter nào gọi** — access token phát hành ra không hề được xác thực khi quay lại, và `/api/users` (yêu cầu `authenticated()`) trên thực tế **không thể gọi được bằng bất kỳ token nào** vì thiếu bước nạp `SecurityContextHolder`. Đã lấp lỗ hổng này.
+
+### 3.6 Phân quyền theo Role
+
+`User` có thêm field `role` (enum [`Role`](../src/main/java/com/codesentinel/auth/domain/Role.java): `USER`, `ADMIN`; mặc định `USER` khi tạo mới qua `@Builder.Default`). `GET`/`POST /api/users` yêu cầu `ROLE_ADMIN`. Vì chưa có API/flow nào tạo tài khoản ADMIN, muốn thử endpoint này cần tự update thủ công trong DB: `UPDATE users SET role = 'ADMIN' WHERE id = ...;`.
+
+> Cột `role` **không** đặt `NOT NULL` ở entity — nếu đặt, `spring.jpa.hibernate.ddl-auto=update` có thể fail khi `ALTER TABLE` thêm cột NOT NULL vào bảng `users` đã có dữ liệu cũ (không có giá trị backfill). User cũ có `role = null` được `JwtAuthenticationFilter` mặc định coi như `USER`.
+
+### 3.7 OAuth2 (Facebook)
 
 `SecurityConfig` bật `oauth2Login()`, cấu hình Facebook nằm ở `application.yml`. Vẫn **chưa có `successHandler`** nối vào `JwtService` để phát hành token nội bộ sau khi login Facebook — đây là việc cần làm thêm khi triển khai social login thật sự.
 
-### 3.5 Quản lý user khác (`/api/users`)
+### 3.8 Quản lý user khác (`/api/users`)
 
-[`auth/api/UserController`](../src/main/java/com/codesentinel/auth/api/UserController.java):
+[`auth/api/UserController`](../src/main/java/com/codesentinel/auth/api/UserController.java) — giờ yêu cầu `ROLE_ADMIN` (xem 3.6):
 - `POST /api/users` → `UserService.createUser()` — **đã sửa 3 bug**: (1) trước đây không set `username` (cột NOT NULL) nên sẽ lỗi ở DB, (2) không hash password, (3) response map sai field (`username` lấy nhầm từ `fullName`). Giờ dùng chung logic đúng như `AuthServiceImpl`.
 - `GET /api/users` → trả `List<UserResponse>` thay vì trả thẳng entity `User` như trước (entity có field `password` đã hash — lộ qua JSON API là lỗi bảo mật đã được sửa).
 
 `UserService` giờ là **interface**, `UserServiceImpl` là implementation — controller phụ thuộc vào abstraction (Dependency Inversion Principle) thay vì class cụ thể như trước.
 
-### 3.6 reCAPTCHA
+### 3.9 reCAPTCHA
 
 [`RecaptchaService`](../src/main/java/com/codesentinel/auth/application/RecaptchaService.java) vẫn tồn tại và verify được token qua Google API, nhưng **vẫn chưa được gọi từ `login()`** (field `recaptchaToken` trong `LoginRequest` bị bỏ ở bản gốc). Không tự động bật lại trong đợt refactor này vì cần phối hợp với frontend (frontend hiện không gửi token) — cân nhắc bật khi frontend sẵn sàng.
 
@@ -202,6 +232,13 @@ Response cuối [`ScanSummary`](../src/main/java/com/codesentinel/scan/domain/mo
 | 12 | Cấu trúc thư mục lộn xộn: `config/`, `common/`, `security/`, `user/`, `scan/{controller,service,util,rule,...}` rải rác không theo layer nào | Tổ chức lại thành `auth/`, `scan/`, `shared/`, mỗi module theo `api → application → domain → infrastructure` |
 | 13 | `application.properties` khai báo trùng Facebook client-id/secret với `application.yml`, và có 3 key chết (`jwt.secret`, `google.client-id`, `google.client-secret`) không được đọc bởi bất kỳ `@ConfigurationProperties` nào | Xoá các key trùng/chết |
 | 14 | Package test `com.example.CodeSentinel` không khớp package chính `com.codesentinel` | Sửa về đúng `com.codesentinel` |
+| 15 | `JwtService.validateToken()` tồn tại nhưng không filter nào gọi — access token phát hành ra không hề được xác thực khi quay lại; `/api/users` (`authenticated()`) trên thực tế không gọi được bằng bất kỳ token nào | Thêm `JwtAuthenticationFilter`, gắn vào `SecurityFilterChain` trước `UsernamePasswordAuthenticationFilter` |
+| 16 | Refresh token được sinh ra + lưu DB nhưng không có API nào dùng nó — chết ngay từ khi tạo ra | Thêm `POST /api/auth/refresh`, có rotation (refresh token dùng 1 lần) |
+| 17 | `RefreshToken.revoked` khai báo sẵn nhưng không nơi nào set `true` — không có cách thu hồi phiên đăng nhập | Thêm `POST /api/auth/logout` |
+| 18 | Không có role/authorization model — mọi user (nếu có xác thực) đều ngang quyền nhau | Thêm enum `Role` (`USER`/`ADMIN`) vào `User`; `GET`/`POST /api/users` yêu cầu `ROLE_ADMIN` |
+| 19 | Lỗi 401/403 từ Spring Security (filter chain) trả về không cùng format `ApiResponse` với phần còn lại của API | Thêm `RestAuthenticationEntryPoint` (401) + `RestAccessDeniedHandler` (403), gắn qua `.exceptionHandling()` trong `SecurityConfig` |
+| 20 | `POST /api/auth/login`, `/register`, `/refresh` không có giới hạn số lần gọi — có thể brute-force password hoặc spam tạo tài khoản | Thêm `RateLimitFilter` (Bucket4j in-memory): tối đa 5 request/phút theo (IP + đường dẫn), vượt quá trả 429 |
+| 21 | `Provider`, `UserProvider`, `LoginProvider` (entity + repository cho multi-provider OAuth) và `ApplicationConstant` là code chết — không service/controller nào import, sống sót qua các đợt refactor trước vì bị coi là "thuộc domain hiện có" mà không kiểm tra lại | Xoá toàn bộ 6 file (2 entity + 1 enum + 2 repository + 1 constant class) sau khi xác nhận không nơi nào tham chiếu |
 
 ## 7. Việc còn lại — chưa xử lý trong đợt này (cần quyết định thêm)
 
@@ -209,9 +246,11 @@ Response cuối [`ScanSummary`](../src/main/java/com/codesentinel/scan/domain/mo
 
 1. **Secret plaintext trong `application.yml`** (JWT secret, Facebook client-secret, reCAPTCHA secret) — nên chuyển sang biến môi trường như đã làm với `DB_URL/DB_USERNAME/DB_PASSWORD`, nhưng cần bạn tự cấu hình biến môi trường tương ứng trên môi trường deploy (Docker/hosting) trước, nếu không app sẽ không khởi động được.
 2. **`oauth2Login()` chưa có `successHandler`** phát hành JWT nội bộ sau khi login Facebook thành công.
-3. **Chưa có filter xác thực JWT** trên request (hiện chưa cần vì mọi route đều `permitAll()`, nhưng sẽ cần khi có route yêu cầu đăng nhập thật).
-4. **reCAPTCHA chưa được enforce ở login** — cần frontend gửi kèm `recaptchaToken` trước khi bật lại kiểm tra này.
-5. **Kiến trúc vẫn là 1 monolith duy nhất** (1 jar, 1 database, 1 Dockerfile) — nếu muốn tách microservice thật sự (auth-service / scan-service độc lập, DB riêng, deploy riêng), đây là bước tiếp theo, không nằm trong phạm vi đợt refactor này.
+3. **reCAPTCHA chưa được enforce ở login** — cần frontend gửi kèm `recaptchaToken` trước khi bật lại kiểm tra này.
+4. **Không có cách tạo tài khoản ADMIN đầu tiên** — phải tự `UPDATE users SET role = 'ADMIN'` thủ công trong DB; chưa có quy trình bootstrap admin an toàn (out of scope, cần bạn quyết định cách làm: seed script, CLI riêng, hay endpoint chỉ gọi được 1 lần).
+5. **Access token không thể thu hồi giữa chừng** — logout chỉ revoke refresh token; access token cũ (tối đa 15 phút) vẫn dùng được tới khi tự hết hạn, vì access token không lưu DB (thiết kế stateless có đánh đổi này, chấp nhận được với thời hạn ngắn).
+6. **Kiến trúc vẫn là 1 monolith duy nhất** (1 jar, 1 database, 1 Dockerfile) — nếu muốn tách microservice thật sự (auth-service / scan-service độc lập, DB riêng, deploy riêng), đây là bước tiếp theo, không nằm trong phạm vi đợt refactor này.
+7. **Rate limit hiện là in-memory theo từng instance** (`RateLimitFilter` dùng `ConcurrentHashMap` nội bộ) — nếu sau này scale ngang nhiều instance, mỗi instance đếm giới hạn riêng, không dùng chung. Muốn chính xác tuyệt đối giữa nhiều instance cần chuyển sang backend dùng chung (Redis...).
 
 ---
 
