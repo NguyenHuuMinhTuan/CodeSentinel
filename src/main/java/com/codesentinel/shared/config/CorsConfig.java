@@ -16,7 +16,7 @@ public class CorsConfig {
 
                 config.setAllowedOrigins(List.of(
                                 "http://localhost:5173",
-                                "https://codesentinal.netlify.app/"));
+                                "https://codesentinal.netlify.app"));
 
                 config.setAllowedMethods(List.of(
                                 "GET",
